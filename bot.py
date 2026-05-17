@@ -25,7 +25,7 @@ FILES_DIR = Path("files")
 FILES_DIR.mkdir(exist_ok=True)
 
 # --------------------------------------------------------------
-# Funciones de API
+# Funciones de API (sin cambios)
 # --------------------------------------------------------------
 BASE_URL = "https://botremesasapi-production.up.railway.app"
 
@@ -483,7 +483,6 @@ async def start_handler(event):
     if es_admin:
         await send_admin_menu(user_id)
     else:
-        # Para usuarios normales, el inicio también puede mostrar el menú de remesas
         await send_user_menu(user_id)
 
 @client.on(events.NewMessage(pattern='/user'))
@@ -499,7 +498,6 @@ async def user_handler(event):
         ]
         await event.respond("Selecciona una acción:", buttons=botones)
     else:
-        # Usuario normal solo puede solicitar creación
         botones = [
             [Button.inline("✨ Solicitar crear usuario", data="createuser")]
         ]
@@ -558,13 +556,11 @@ async def callback_handler(event):
             logging.warning(f"Error al responder callback: {e}")
 
     async def finalizar_accion_admin(mensaje=None):
-        """Envía el menú de administrador después de una acción."""
         if mensaje:
             await event.reply(mensaje)
         await send_admin_menu(user_id)
 
     async def finalizar_accion_user(mensaje=None):
-        """Envía el menú de usuario después de una acción."""
         if mensaje:
             await event.reply(mensaje)
         await send_user_menu(user_id)
@@ -707,7 +703,6 @@ async def callback_handler(event):
         await event.edit(f"✅ Retiro aprobado para el usuario {user_id_solicitante} por {amount}.\nResultado: {mensaje}")
         await safe_answer("Retiro aprobado.")
         del user_states[f"pending_{solicitud_id}"]
-        # Después de aprobar, volver al menú admin
         await send_admin_menu(user_id)
         return
 
@@ -853,7 +848,6 @@ async def callback_handler(event):
                 mensaje += (f"**{u.get('name')}** - Telegram ID: `{u.get('idUserTelegram')}` - "
                             f"Porcentaje: {per_cent_str}%\nUUID: `{u.get('id')}`\n\n")
             await event.edit(mensaje)
-            # No salir del menú de usuarios, permitir seguir
         else:
             usuario = await obtener_usuario_por_telegram_id(user_id)
             if not usuario:
@@ -863,7 +857,6 @@ async def callback_handler(event):
             per_cent_str = f"{per_cent:.2f}".rstrip('0').rstrip('.') if isinstance(per_cent, float) else str(per_cent)
             mensaje = f"👤 **Tus datos:**\nNombre: {usuario.get('name')}\nTelegram ID: `{usuario.get('idUserTelegram')}`\nPorcentaje: {per_cent_str}%\nUUID: `{usuario.get('id')}`"
             await event.edit(mensaje)
-        # Después de ver, devolver al menú anterior (podría ser el mismo de usuario)
         await send_user_menu(user_id)
         return
 
@@ -1048,7 +1041,7 @@ async def callback_handler(event):
              Button.inline("📅 60 días", data="admin_history_60d")],
             [Button.inline("🔙 Volver al menú", data="admin_history_back")]
         ]
-        await event.edit("📆 **Selecciona el período para ver el historial de remesas de todos los usuarios:**", buttons=botones_filtros)
+        await event.edit("📆 **Selecciona el período para ver el historial de remesas:**", buttons=botones_filtros)
         await safe_answer("Elige un filtro de fecha.")
         return
 
@@ -1071,6 +1064,33 @@ async def callback_handler(event):
             await safe_answer("⛔ No eres administrador.", alert=True)
             return
 
+        # Guardar el filtro seleccionado en el estado
+        user_states[user_id] = {"admin_selected_filter": filtro}
+        # Obtener lista de usuarios y mostrar botones para elegir
+        usuarios = await listar_usuarios()
+        if not usuarios:
+            await event.edit("❌ No se pudo obtener la lista de usuarios.")
+            return
+        botones_usuarios = []
+        for u in usuarios:
+            botones_usuarios.append([Button.inline(f"👤 {u['name']}", data=f"admin_history_user_{u['id']}")])
+        botones_usuarios.append([Button.inline("🔙 Volver a filtros", data="admin_view_remesas")])
+        await event.edit("📌 **Selecciona un usuario para ver sus remesas:**", buttons=botones_usuarios)
+        await safe_answer("Selecciona un usuario.")
+        return
+
+    if data.startswith("admin_history_user_"):
+        user_uuid = data.replace("admin_history_user_", "")
+        es_admin, _ = await verificar_admin(user_id)
+        if not es_admin:
+            await safe_answer("⛔ No eres administrador.", alert=True)
+            return
+        state = user_states.get(user_id, {})
+        filtro = state.get("admin_selected_filter")
+        if not filtro:
+            await safe_answer("❌ No se ha seleccionado un filtro de fecha. Vuelve a empezar.", alert=True)
+            return
+
         now = datetime.now(timezone.utc)
         if filtro == "today":
             start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1084,53 +1104,50 @@ async def callback_handler(event):
             await safe_answer("Filtro no válido.", alert=True)
             return
 
-        usuarios = await listar_usuarios()
-        if not usuarios:
-            await event.edit("❌ No se pudo obtener la lista de usuarios.")
+        history = await listar_history_remittances(user_uuid)
+        if history is None:
+            await event.edit("❌ Error al obtener el historial de remesas para este usuario.")
             return
 
-        all_remittances = []
-        for user_data in usuarios:
-            user_uuid = user_data.get("id")
-            user_name = user_data.get("name", "Usuario")
-            if not user_uuid:
-                continue
-            history = await listar_history_remittances(user_uuid)
-            if not history:
-                continue
-            for h in history:
-                created_at = datetime.fromisoformat(h["createdAt"].replace("Z", "+00:00"))
-                if created_at >= start_date:
-                    all_remittances.append({
-                        "user_name": user_name,
-                        "customer": h.get("customer", "?"),
-                        "amount": h.get("amount"),
-                        "account": h.get("account", "?"),
-                        "amountPay": h.get("amountPay"),
-                        "createdAt": h.get("createdAt")
-                    })
-        if not all_remittances:
-            await event.edit(f"📭 No hay remesas en el período seleccionado ({filtro}).")
+        # Filtrar por fecha
+        filtered = []
+        for h in history:
+            created_at = datetime.fromisoformat(h["createdAt"].replace("Z", "+00:00"))
+            if created_at >= start_date:
+                filtered.append(h)
+
+        if not filtered:
+            await event.edit(f"📭 No hay remesas para este usuario en el período seleccionado ({filtro}).")
             return
 
-        all_remittances.sort(key=lambda x: x["createdAt"], reverse=True)
-        mensaje = f"📊 **Remesas de todos los usuarios - {filtro.upper()}**\n\n"
-        for idx, r in enumerate(all_remittances[:30], 1):
+        # Ordenar por fecha descendente
+        filtered.sort(key=lambda x: x["createdAt"], reverse=True)
+
+        mensaje = f"📊 **Remesas del usuario - {filtro.upper()}**\n\n"
+        for idx, h in enumerate(filtered[:30], 1):
             mensaje += (
-                f"**{idx}.** Usuario: {r['user_name']}\n"
-                f"   Cliente: {r['customer']}\n"
-                f"   Monto: {r['amount']}\n"
-                f"   Cuenta: {r['account']}\n"
-                f"   Salario: {r['amountPay']}\n"
-                f"   Fecha: {r['createdAt'][:10]}\n\n"
+                f"**{idx}.** Cliente: {h.get('customer', '?')}\n"
+                f"   Monto: {h.get('amount')}\n"
+                f"   Cuenta: {h.get('account', '?')}\n"
+                f"   Salario: {h.get('amountPay')}\n"
+                f"   Fecha: {h.get('createdAt')[:10]}\n\n"
             )
-        if len(all_remittances) > 30:
+        if len(filtered) > 30:
             mensaje += "_Mostrando solo las primeras 30 remesas._"
 
-        botones_volver = [[Button.inline("🔙 Volver a filtros", data="admin_view_remesas")]]
+        botones_volver = [
+            [Button.inline("🔙 Volver a selección de usuario", data="admin_view_remesas")],
+            [Button.inline("🏠 Volver al menú principal", data="admin_back_to_menu")]
+        ]
         await client.send_message(user_id, mensaje, buttons=botones_volver)
         await event.delete()
         await safe_answer("Resultados enviados.")
+        return
+
+    if data == "admin_back_to_menu":
+        await send_admin_menu(user_id)
+        await event.delete()
+        await safe_answer("Volviendo al menú principal.")
         return
 
     if data == "admin_view_salary":
@@ -1297,7 +1314,6 @@ async def callback_handler(event):
 
         await event.edit(mensaje)
         await safe_answer("Remesa actualizada.", alert=True)
-        # Volver al menú admin
         await send_admin_menu(user_id)
         return
 
@@ -1414,12 +1430,11 @@ async def callback_handler(event):
             return
         await mostrar_cuentas(event, cuentas, titulo="🏦 **Lista de cuentas:**")
         await event.delete()
-        # Después de ver cuentas, volver al menú admin
         await send_admin_menu(user_id)
         return
 
 # --------------------------------------------------------------
-# Conversación (mensajes de texto)
+# Conversación (mensajes de texto) - sin cambios
 # --------------------------------------------------------------
 @client.on(events.NewMessage)
 async def conversation_handler(event):
@@ -1686,13 +1701,13 @@ async def conversation_handler(event):
             return
 
 # --------------------------------------------------------------
-# Tarea en segundo plano: reporte diario a las 20:00
+# Tarea en segundo plano: reporte diario a las 20:00 Cuba (UTC 0)
 # --------------------------------------------------------------
 async def daily_report_task():
-    """Cada día a las 20:00, obtiene todos los usuarios, sus remesas del día actual y envía un resumen."""
+    """Cada día a las 20:00 hora de Cuba (00:00 UTC), obtiene todos los usuarios, sus remesas del día actual y envía un resumen."""
     while True:
         now = datetime.now(timezone.utc)
-        target_hour = 20
+        target_hour = 0
         target_minute = 0
         target_second = 0
         next_run = now.replace(hour=target_hour, minute=target_minute, second=target_second, microsecond=0)
