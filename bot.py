@@ -1046,34 +1046,29 @@ async def callback_handler(event):
             await safe_answer("⛔ No eres administrador.", alert=True)
             return
 
-        # Generar un ID único para esta consulta
-        query_id = str(uuid.uuid4())
-        # Guardar filtro y query_id en el estado
-        user_states[user_id] = {"admin_selected_filter": filtro, "admin_query_id": query_id}
+        # Guardar filtro seleccionado
+        user_states[user_id] = {"admin_selected_filter": filtro}
         # Eliminar mensaje de filtros
         await event.delete()
         # Obtener usuarios
         usuarios = await listar_usuarios()
-        if not usuarios:
-            await client.send_message(
-                user_id,
+        if not usuarios or len(usuarios) == 0:
+            await event.respond(
                 "❌ No hay usuarios registrados o no se pudo obtener la lista.\n\nUsa /user para crear un usuario.",
                 buttons=[[Button.inline("🔙 Volver al menú", data="admin_back_to_menu")]]
             )
             await safe_answer("Error: lista de usuarios vacía.")
             return
 
-        # Construir botones de usuarios incluyendo el query_id en el data
+        # Botones de usuarios
         botones_usuarios = []
         for u in usuarios[:20]:
             nombre = u.get("name", "Sin nombre")
             uid = u.get("id")
-            botones_usuarios.append([Button.inline(f"👤 {nombre}", data=f"admin_history_user_{uid}|{query_id}")])
-        # Botón para volver a filtros
+            botones_usuarios.append([Button.inline(f"👤 {nombre}", data=f"admin_history_user_{uid}")])
         botones_usuarios.append([Button.inline("🔙 Volver a filtros", data="admin_view_remesas")])
 
-        await client.send_message(
-            user_id,
+        await event.respond(
             f"📌 **Selecciona un usuario para ver sus remesas en el período: {filtro.upper()}**",
             buttons=botones_usuarios
         )
@@ -1081,34 +1076,26 @@ async def callback_handler(event):
         return
 
     if data.startswith("admin_history_user_"):
-        # El formato del data es: admin_history_user_{user_uuid}|{query_id}
-        parts = data.replace("admin_history_user_", "").split("|")
-        if len(parts) != 2:
-            await safe_answer("❌ Formato inválido.", alert=True)
-            return
-        user_uuid, query_id = parts
+        user_uuid = data.replace("admin_history_user_", "")
         es_admin, _ = await verificar_admin(user_id)
         if not es_admin:
             await safe_answer("⛔ No eres administrador.", alert=True)
             return
 
-        # Verificar que el query_id coincida con el estado actual
+        # Obtener filtro guardado
         state = user_states.get(user_id, {})
-        stored_query_id = state.get("admin_query_id")
         filtro = state.get("admin_selected_filter")
-        if not filtro or stored_query_id != query_id:
-            await safe_answer("⚠️ Esta consulta ha expirado o es inválida. Por favor, vuelve a seleccionar un período.", alert=True)
-            # Limpiar estado y ofrecer volver al menú
-            if user_id in user_states:
-                del user_states[user_id]
-            await client.send_message(user_id, "Para volver a intentar, usa /remesas -> Ver remesas.")
+        if not filtro:
+            await safe_answer("❌ No se ha seleccionado un filtro de fecha. Vuelve a empezar.", alert=True)
+            await event.respond("Por favor, selecciona un período desde /remesas -> Ver remesas.")
             return
+
+        # Limpiar estado
+        if user_id in user_states:
+            del user_states[user_id]
 
         # Eliminar el mensaje de lista de usuarios
         await event.delete()
-        # Limpiar el estado inmediatamente
-        if user_id in user_states:
-            del user_states[user_id]
 
         now = datetime.now(timezone.utc)
         if filtro == "today":
@@ -1125,8 +1112,7 @@ async def callback_handler(event):
 
         history = await listar_history_remittances(user_uuid)
         if history is None:
-            await client.send_message(
-                user_id,
+            await event.respond(
                 "❌ Error al obtener el historial de remesas para este usuario.",
                 buttons=[[Button.inline("🔙 Volver a selección de usuario", data="admin_view_remesas")]]
             )
@@ -1139,8 +1125,7 @@ async def callback_handler(event):
                 filtered.append(h)
 
         if not filtered:
-            await client.send_message(
-                user_id,
+            await event.respond(
                 f"📭 No hay remesas para este usuario en el período seleccionado ({filtro.upper()}).",
                 buttons=[[Button.inline("🔙 Volver a selección de usuario", data="admin_view_remesas")]]
             )
@@ -1163,7 +1148,7 @@ async def callback_handler(event):
             [Button.inline("🔙 Volver a selección de usuario", data="admin_view_remesas")],
             [Button.inline("🏠 Volver al menú principal", data="admin_back_to_menu")]
         ]
-        await client.send_message(user_id, mensaje, buttons=botones_volver)
+        await event.respond(mensaje, buttons=botones_volver)
         await safe_answer("Resultados enviados.")
         return
 
