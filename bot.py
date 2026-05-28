@@ -1004,11 +1004,15 @@ async def callback_handler(event):
         return
 
     # ---------- Acciones de administrador (remesas) ----------
+        # ---------- Acciones de administrador (remesas) ----------
     if data == "admin_view_remesas":
         es_admin, _ = await verificar_admin(user_id)
         if not es_admin:
             await safe_answer("⛔ No eres administrador.", alert=True)
             return
+        # Limpiar cualquier estado anterior del admin
+        if user_id in user_states:
+            del user_states[user_id]
         user_states[user_id] = {"action": "admin_history_filters"}
         botones_filtros = [
             [Button.inline("📅 Hoy", data="admin_history_today"),
@@ -1024,6 +1028,9 @@ async def callback_handler(event):
     if data.startswith("admin_history_"):
         filtro = data.replace("admin_history_", "")
         if filtro == "back":
+            # Limpiar estado y volver al menú de admin de remesas
+            if user_id in user_states:
+                del user_states[user_id]
             botones = [
                 [Button.inline("➕ Crear remesa", data="admin_create_remesa"),
                  Button.inline("✏️ Actualizar remesa", data="admin_update_remesa")],
@@ -1039,8 +1046,10 @@ async def callback_handler(event):
             await safe_answer("⛔ No eres administrador.", alert=True)
             return
 
-        # Guardar el filtro seleccionado
-        user_states[user_id] = {"admin_selected_filter": filtro}
+        # Guardar el filtro seleccionado y un ID único para esta consulta
+        import uuid
+        query_id = str(uuid.uuid4())
+        user_states[user_id] = {"admin_selected_filter": filtro, "admin_query_id": query_id}
         # Eliminar mensaje de filtros
         await event.delete()
         # Obtener usuarios
@@ -1054,12 +1063,12 @@ async def callback_handler(event):
             await safe_answer("Error: lista de usuarios vacía.")
             return
 
-        # Construir botones de usuarios
+        # Construir botones de usuarios con el query_id para evitar conflictos
         botones_usuarios = []
         for u in usuarios[:20]:
             nombre = u.get("name", "Sin nombre")
             uid = u.get("id")
-            botones_usuarios.append([Button.inline(f"👤 {nombre}", data=f"admin_history_user_{uid}")])
+            botones_usuarios.append([Button.inline(f"👤 {nombre}", data=f"admin_history_user_{uid}_{query_id}")])
         # Botón para volver a filtros
         botones_usuarios.append([Button.inline("🔙 Volver a filtros", data="admin_view_remesas")])
 
@@ -1072,17 +1081,34 @@ async def callback_handler(event):
         return
 
     if data.startswith("admin_history_user_"):
-        user_uuid = data.replace("admin_history_user_", "")
+        # Extraer UUID y query_id del data
+        # El formato es: admin_history_user_{user_uuid}_{query_id}
+        parts = data.replace("admin_history_user_", "").split("_")
+        # El último parte es el query_id, el resto es el user_uuid (puede contener guiones)
+        if len(parts) < 2:
+            await safe_answer("❌ Formato inválido.", alert=True)
+            return
+        query_id = parts[-1]
+        user_uuid = "_".join(parts[:-1])  # Reconstruir el UUID original
         es_admin, _ = await verificar_admin(user_id)
         if not es_admin:
             await safe_answer("⛔ No eres administrador.", alert=True)
             return
+        
+        # Verificar que el query_id coincida con el estado actual
         state = user_states.get(user_id, {})
+        stored_query_id = state.get("admin_query_id")
         filtro = state.get("admin_selected_filter")
-        if not filtro:
-            await safe_answer("❌ No se ha seleccionado un filtro de fecha. Vuelve a empezar.", alert=True)
-            await client.send_message(user_id, "Por favor, selecciona un período desde /remesas -> Ver remesas.")
+        if not filtro or stored_query_id != query_id:
+            await safe_answer("⚠️ Esta consulta ha expirado o es inválida. Por favor, vuelve a seleccionar un período.", alert=True)
+            # Limpiar estado y ofrecer volver al menú
+            if user_id in user_states:
+                del user_states[user_id]
+            await client.send_message(user_id, "Para volver a intentar, usa /remesas -> Ver remesas.")
             return
+
+        # Eliminar el mensaje de lista de usuarios (el que contiene los botones)
+        await event.delete()
 
         now = datetime.now(timezone.utc)
         if filtro == "today":
@@ -1104,6 +1130,9 @@ async def callback_handler(event):
                 "❌ Error al obtener el historial de remesas para este usuario.",
                 buttons=[[Button.inline("🔙 Volver a selección de usuario", data="admin_view_remesas")]]
             )
+            # Limpiar estado
+            if user_id in user_states:
+                del user_states[user_id]
             return
 
         filtered = []
@@ -1118,7 +1147,9 @@ async def callback_handler(event):
                 f"📭 No hay remesas para este usuario en el período seleccionado ({filtro}).",
                 buttons=[[Button.inline("🔙 Volver a selección de usuario", data="admin_view_remesas")]]
             )
-            await event.delete()
+            # Limpiar estado
+            if user_id in user_states:
+                del user_states[user_id]
             return
 
         filtered.sort(key=lambda x: x["createdAt"], reverse=True)
@@ -1139,10 +1170,11 @@ async def callback_handler(event):
             [Button.inline("🏠 Volver al menú principal", data="admin_back_to_menu")]
         ]
         await client.send_message(user_id, mensaje, buttons=botones_volver)
-        await event.delete()
         await safe_answer("Resultados enviados.")
+        # Limpiar estado del admin después de mostrar resultados
+        if user_id in user_states:
+            del user_states[user_id]
         return
-
     if data == "admin_back_to_menu":
         await send_admin_menu(user_id)
         await event.delete()
